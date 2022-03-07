@@ -38,7 +38,7 @@ const config: HardhatUserConfig = {
   abiExporter: {
     runOnCompile: true,
     flat: true,
-    only: ["Greeter"],
+    only: ["BIGPublicSale", "MyERC20"],
   },
   typechain: {
     outDir: "types",
