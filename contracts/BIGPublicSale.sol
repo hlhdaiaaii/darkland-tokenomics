@@ -16,6 +16,8 @@ contract BIGPublicSale is Ownable {
         uint256 claimedAmount;
     }
 
+    uint8 public status = 0;
+
     uint256 public constant PERIOD = 30 days;
     uint256 public TGE_RELEASE_LOCK_DURATION = 2 hours; // 2 hours
     uint256 public TGE_RELEASE_PERCENT = 20; // 20%
@@ -25,82 +27,42 @@ contract BIGPublicSale is Ownable {
 
     IERC20 public token;
     uint256 public tgeTime;
-    uint256 public saleStartTime;
-    uint256 public saleEndTime;
-    uint256 public minPurchaseAmount;
-    uint256 public maxPurchaseAmount;
-    uint256 public inBNBPrice;
 
     uint256 public totalPurchasedAmount;
     uint256 public totalClaimedAmount;
     mapping(address => Purchase) public purchases;
-    mapping(address => bool) public whitelist;
+    address[] public purchasers;
 
-    event Purchased(address purchaser, uint256 amount);
     event Claimed(address claimer, uint256 amount);
 
-    constructor(
-        address _token,
-        uint256 _tgeTime,
-        uint256 _saleStartTime,
-        uint256 _saleEndTime,
-        uint256 _minPurchaseAmount,
-        uint256 _maxPurchaseAmount,
-        uint256 _inBNBPrice
-    ) {
+    constructor(address _token, uint256 _tgeTime) {
         token = IERC20(_token);
         tgeTime = _tgeTime;
-        saleStartTime = _saleStartTime;
-        saleEndTime = _saleEndTime;
-        minPurchaseAmount = _minPurchaseAmount;
-        maxPurchaseAmount = _maxPurchaseAmount;
-        inBNBPrice = _inBNBPrice;
     }
 
-    function purchaseInBNB() external payable {
-        console.log(
-            "BIGPublicSale - purchaseInBNB(): current timestamp: ",
-            block.timestamp
-        );
-
-        require(
-            totalPurchasedAmount < TOTAL_ALLOCATION,
-            "BIGPublicSale: OUT_OF_ALLOCATION"
-        );
-        require(
-            block.timestamp >= saleStartTime && block.timestamp <= saleEndTime,
-            "BIGPublicSale: NOT_IN_OCCURING_TIME"
-        );
-        require(whitelist[_msgSender()], "BIGPublicSale: NOT_WHITELISTED");
-
-        uint256 purchaseAmount = calcInBNBPurchaseAmount(msg.value);
-        console.log(
-            "BIGPublicSale - purchaseInBNB(): purchaseAmount: ",
-            purchaseAmount
-        );
-        require(
-            purchaseAmount >= minPurchaseAmount,
-            "BIGPublicSale: UNDER_MIN_AMOUNT"
-        );
-        require(
-            purchaseAmount <= maxPurchaseAmount,
-            "BIGPublicSale: EXCEED_MAX_AMOUNT"
-        );
-
-        purchases[_msgSender()].purchasedAmount = purchases[_msgSender()]
-            .purchasedAmount
-            .add(purchaseAmount);
-        totalPurchasedAmount.add(purchaseAmount);
-
-        emit Purchased(_msgSender(), purchaseAmount);
+    modifier canSet() {
+        require(status == 0, "BIGPublicSale: CANNOT_SET");
+        _;
     }
 
-    function calcInBNBPurchaseAmount(uint256 bnbAmount)
-        public
-        view
-        returns (uint256)
+    function setToken(address _token) external onlyOwner canSet {
+        token = IERC20(_token);
+    }
+
+    function setTGETime(uint256 _tgeTime) external onlyOwner canSet {
+        tgeTime = _tgeTime;
+    }
+
+    function setPurchasedAmount(address purchaser, uint256 amount)
+        external
+        onlyOwner
+        canSet
     {
-        return bnbAmount.div(inBNBPrice).mul(1 ether);
+        purchases[purchaser].purchasedAmount = amount;
+    }
+
+    function stopSet() external onlyOwner canSet {
+        status = 1;
     }
 
     function claim() external {
@@ -111,7 +73,10 @@ contract BIGPublicSale is Ownable {
         );
 
         uint256 claimAmount = calcClaimAmount(_msgSender());
-        console.log("BIGPublicSale - claim(): claimAmount: ", claimAmount);
+        console.log(
+            "BIGPublicSale - claim(): claimAmount: %s ether ",
+            claimAmount.div(1 ether)
+        );
 
         require(claimAmount > 0, "BIGPublicSale: NO_AVAILABLE_CLAIM");
 
@@ -130,10 +95,17 @@ contract BIGPublicSale is Ownable {
         Purchase memory purchase = purchases[purchaser]; // gas saving
 
         uint256 tgeReleaseTime = tgeTime.add(TGE_RELEASE_LOCK_DURATION);
+        console.log("BIGPublicSale - calcClaimAmount(): tgeTime: %s", tgeTime);
+        console.log(
+            "BIGPublicSale - calcClaimAmount(): TGE_RELEASE_LOCK_DURATION: %s",
+            TGE_RELEASE_LOCK_DURATION
+        );
         // before TGE release time
         if (block.timestamp < tgeReleaseTime) {
             console.log(
-                "BIGPublicSale - calcClaimAmount(): block.timestamp < tgeReleaseTime"
+                "BIGPublicSale - calcClaimAmount(): block.timestamp < tgeReleaseTime, %s < %s",
+                block.timestamp,
+                tgeReleaseTime
             );
             return 0;
         }
@@ -143,33 +115,77 @@ contract BIGPublicSale is Ownable {
             .mul(TGE_RELEASE_PERCENT)
             .div(100);
         // by the time after cliff duration from TGE release time, i.e. right before vesting time
-        uint256 cliffTime = tgeReleaseTime.add(CLIFF_DURATION);
-        if (block.timestamp <= cliffTime) {
+        uint256 afterCliffTime = tgeReleaseTime.add(CLIFF_DURATION);
+        console.log(
+            "BIGPublicSale - calcClaimAmount(): tgeReleaseTime: %s",
+            tgeReleaseTime
+        );
+        console.log(
+            "BIGPublicSale - calcClaimAmount(): CLIFF_DURATION: %s",
+            CLIFF_DURATION
+        );
+        if (block.timestamp <= afterCliffTime) {
             console.log(
-                "BIGPublicSale - calcClaimAmount(): block.timestamp <= cliffTime"
+                "BIGPublicSale - calcClaimAmount(): block.timestamp <= afterCliffTime, %s <= %s",
+                block.timestamp,
+                afterCliffTime
             );
             return tgeReleaseAmount - purchase.claimedAmount;
         }
 
+        console.log(
+            "BIGPublicSale - calcClaimAmount(): block.timestamp > afterCliffTime, %s > %s",
+            block.timestamp,
+            afterCliffTime
+        );
         // begin vesting time
         uint256 totalClaimAmount = tgeReleaseAmount;
-        uint256 nPeriods = uint256(block.timestamp).sub(cliffTime).div(PERIOD);
+        uint256 nPeriods = uint256(block.timestamp).sub(afterCliffTime).div(
+            PERIOD
+        );
+        if (nPeriods > 4) nPeriods = 4;
 
+        console.log("BIGPublicSale - calcClaimAmount(): PERIOD: %s", PERIOD);
+        console.log(
+            "BIGPublicSale - calcClaimAmount(): nPeriods: %s",
+            nPeriods
+        );
         uint256 periodicVestingAmount = purchase
             .purchasedAmount
             .sub(tgeReleaseAmount)
             .div(PERIODIC_VESTING_TIMES);
         uint256 toDateVestingAmount = nPeriods.mul(periodicVestingAmount);
         totalClaimAmount = totalClaimAmount.add(toDateVestingAmount);
-        if (totalClaimAmount > purchase.purchasedAmount)
-            totalClaimAmount = purchase.purchasedAmount;
+        // if (totalClaimAmount > purchase.purchasedAmount)
+        //     totalClaimAmount = purchase.purchasedAmount;
 
         return totalClaimAmount - purchase.claimedAmount;
     }
 
-    function addWhitelist(address[] calldata purchasers) external onlyOwner {
-        for (uint256 i = 0; i < purchasers.length; i++) {
-            whitelist[purchasers[i]] = true;
+    function addPurchasers(
+        address[] calldata _purchasers,
+        uint256[] calldata _amounts
+    ) external onlyOwner {
+        require(
+            _purchasers.length == _amounts.length,
+            "BIGPublicSale: INVALID_INPUT_DATA"
+        );
+
+        for (uint256 i = 0; i < _purchasers.length; i++) {
+            uint256 purchasedAmount = purchases[_purchasers[i]].purchasedAmount;
+            if (purchasedAmount > 0) {
+                purchases[_purchasers[i]].purchasedAmount = purchasedAmount.add(
+                    _amounts[i]
+                );
+            } else {
+                purchases[_purchasers[i]].purchasedAmount = _amounts[i];
+                purchasers.push(_purchasers[i]);
+            }
+            totalPurchasedAmount.add(_amounts[i]);
         }
+    }
+
+    function getAllPurchasers() public view returns (address[] memory) {
+        return purchasers;
     }
 }
